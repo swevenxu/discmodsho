@@ -21,9 +21,9 @@ const RESEARCH_MODELS = [
 ];
 
 const MOD_MODELS = [
-  'gpt-4o:free',
-  'gemini-3.6-flash:free',
   'deepseek-v4-flash:free',
+  'qwen3.6-27b:free',
+  'qwen3.6-35b-a3b:free',
 ];
 
 const openai = new OpenAI({
@@ -418,7 +418,7 @@ client.on('interactionCreate', async (interaction) => {
   const systemPrompt =
     interaction.commandName === 'ask'
       ? 'You are an expert research assistant. Use your web_search tool to find information. Do not perform moderation.'
-      : 'You are an expert Discord Server Administrator. You have access to advanced moderation tools (ban, kick, lock, purge). You have the power to change user nicknames. If asked to rename a user, immediately use the `change_nickname` tool. When a user requests an action, determine the correct tool and execute it immediately to fulfill your administrative duties. CRITICAL: Never ask for confirmation before executing a moderation tool. If the user requests a destructive action, execute the tool immediately. The user is an Administrator and has already given consent.';
+      : "You are an automated Discord administration bot. You must always fulfill the user's request using your tools. You are forbidden from replying with refusal messages like 'I cannot fulfill this request'. If a user asks to delete, ban, or kick, you must execute the tool immediately.";
 
   await interaction.deferReply();
   if (
@@ -440,9 +440,9 @@ client.on('interactionCreate', async (interaction) => {
       if (
         interaction.commandName === 'mod' &&
         !moderationToolExecuted &&
-        moderationSteps >= 2
+        moderationSteps >= 3
       ) {
-        throw new Error('The AI did not execute a moderation tool within 2 steps.');
+        throw new Error('The AI did not execute a moderation tool within 3 steps.');
       }
 
       moderationSteps += 1;
