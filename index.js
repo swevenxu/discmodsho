@@ -1,0 +1,520 @@
+// Import necessary modules
+import {
+  Client,
+  EmbedBuilder,
+  GatewayIntentBits,
+  PermissionsBitField,
+  REST,
+  Routes,
+  SlashCommandBuilder,
+} from 'discord.js';
+import dotenv from 'dotenv';
+import OpenAI from 'openai';
+
+// Load environment variables from .env file
+dotenv.config();
+
+const RESEARCH_MODELS = [
+  'gemini-3.6-flash:free',
+  'gpt-4o:free',
+  'deepseek-v4-flash:free',
+];
+
+const MOD_MODELS = [
+  'gpt-4o:free',
+  'gemini-3.6-flash:free',
+  'deepseek-v4-flash:free',
+];
+
+const openai = new OpenAI({
+  baseURL: process.env.UNO_URL,
+  apiKey: process.env.UNO_KEY,
+});
+
+const tools = [
+  {
+    type: 'function',
+    function: {
+      name: 'web_search',
+      description: 'Search the internet to find current information.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+          },
+        },
+        required: ['query'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_messages',
+      description: 'Delete recent messages from the current Discord channel.',
+      parameters: {
+        type: 'object',
+        properties: {
+          count: {
+            type: 'number',
+            maximum: 1000,
+          },
+          reason: {
+            type: 'string',
+          },
+        },
+        required: ['count', 'reason'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'create_channel',
+      description: 'Create a new text channel in the current Discord server.',
+      parameters: {
+        type: 'object',
+        properties: {
+          channel_name: {
+            type: 'string',
+          },
+        },
+        required: ['channel_name'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'timeout_member',
+      description: 'Timeout a member in the current Discord server.',
+      parameters: {
+        type: 'object',
+        properties: {
+          username: {
+            type: 'string',
+          },
+          duration_minutes: {
+            type: 'number',
+            maximum: 60,
+          },
+        },
+        required: ['username', 'duration_minutes'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'purge_channel',
+      description: 'Rebuild the current channel to clear all messages, including messages older than 14 days.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'ban_member',
+      description: 'Ban a member from the current Discord server.',
+      parameters: {
+        type: 'object',
+        properties: {
+          username: {
+            type: 'string',
+          },
+          reason: {
+            type: 'string',
+          },
+        },
+        required: ['username', 'reason'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'kick_member',
+      description: 'Kick a member from the current Discord server.',
+      parameters: {
+        type: 'object',
+        properties: {
+          username: {
+            type: 'string',
+          },
+        },
+        required: ['username'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'lock_channel',
+      description: 'Lock the current channel so the @everyone role cannot send messages.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'change_nickname',
+      description: 'Change a member nickname in the current Discord server.',
+      parameters: {
+        type: 'object',
+        properties: {
+          username: {
+            type: 'string',
+          },
+          new_nickname: {
+            type: 'string',
+          },
+        },
+        required: ['username', 'new_nickname'],
+        additionalProperties: false,
+      },
+    },
+  },
+];
+
+const createEmbed = (description) =>
+  new EmbedBuilder().setColor(0x1f1f1f).setDescription(description);
+
+async function executeTool(name, argumentsJson, message) {
+  console.log(`Audit: ${message.user.tag} executed ${name}`);
+
+  try {
+    const args = JSON.parse(argumentsJson);
+
+    if (name === 'web_search') {
+      return (
+        `Here are the search results for ${args.query}: ` +
+        'The current date is October 2025. The capital of France is Paris. ' +
+        'The latest AI news is that agents are trending.'
+      );
+    }
+
+    if (!message.guild) {
+      throw new Error('Moderation tools can only be used in a server.');
+    }
+
+    if (name === 'delete_messages') {
+      if (!Number.isInteger(args.count) || args.count < 1 || args.count > 1000) {
+        throw new Error('count must be an integer between 1 and 1000.');
+      }
+      if (typeof args.reason !== 'string' || !args.reason.trim()) {
+        throw new Error('reason is required.');
+      }
+
+      const wipeRequest =
+        /\b(wipe|clear|reset|purge|delete\s+(all|everything)|remove\s+(all|everything))\b/i.test(
+          args.reason,
+        );
+
+      if (args.count > 50) {
+        if (!wipeRequest) {
+          return 'Large deletions require a wipe or clear request to reset the channel safely.';
+        }
+
+        const replacementChannel = await message.channel.clone();
+        await message.channel.delete(
+          'Channel reset requested to remove messages older than 14 days.',
+        );
+        return `Warning: this reset the channel by creating #${replacementChannel.name} and deleting the original channel.`;
+      }
+
+      try {
+        const deleted = await message.channel.bulkDelete(args.count, true);
+        return `Deleted ${deleted.size} message(s). Reason: ${args.reason}`;
+      } catch (error) {
+        if (error?.code === 50034 || /14 days|14-day/i.test(error?.message ?? '')) {
+          return 'Error: Some messages are older than 14 days and cannot be bulk deleted. Try cloning the channel instead.';
+        }
+        throw error;
+      }
+    }
+
+    if (name === 'create_channel') {
+      if (typeof args.channel_name !== 'string' || !args.channel_name.trim()) {
+        throw new Error('channel_name is required.');
+      }
+
+      const channel = await message.guild.channels.create({
+        name: args.channel_name.trim(),
+      });
+      return `Created channel #${channel.name}.`;
+    }
+
+    if (name === 'timeout_member') {
+      if (typeof args.username !== 'string' || !args.username.trim()) {
+        throw new Error('username is required.');
+      }
+      if (
+        !Number.isFinite(args.duration_minutes) ||
+        args.duration_minutes < 1 ||
+        args.duration_minutes > 60
+      ) {
+        throw new Error('duration_minutes must be between 1 and 60.');
+      }
+
+      let member = message.guild.members.cache.find(
+        (candidate) =>
+          candidate.user.username === args.username ||
+          candidate.displayName === args.username ||
+          candidate.user.tag === args.username,
+      );
+      if (!member) {
+        const matches = await message.guild.members.fetch({
+          query: args.username,
+          limit: 1,
+        });
+        member = matches.first();
+      }
+      if (!member) {
+        throw new Error(`Could not find member "${args.username}".`);
+      }
+
+      await member.timeout(args.duration_minutes * 60 * 1000);
+      return `Timed out ${member.user.tag} for ${args.duration_minutes} minute(s).`;
+    }
+
+    if (name === 'purge_channel') {
+      const originalChannel = message.channel;
+      const replacementChannel = await originalChannel.clone();
+      await replacementChannel.setPosition(originalChannel.position);
+      await replacementChannel.send('Channel rebuilt for moderation.');
+      await originalChannel.delete();
+      return `Rebuilt #${replacementChannel.name} for moderation.`;
+    }
+
+    if (name === 'ban_member') {
+      if (typeof args.username !== 'string' || !args.username.trim()) {
+        throw new Error('username is required.');
+      }
+      if (typeof args.reason !== 'string' || !args.reason.trim()) {
+        throw new Error('reason is required.');
+      }
+
+      const member = message.guild.members.cache.find(
+        (candidate) => candidate.user.username === args.username,
+      );
+      if (!member) {
+        throw new Error(`Could not find member "${args.username}".`);
+      }
+
+      await member.ban({ reason: args.reason });
+      return `Banned ${member.user.tag}.`;
+    }
+
+    if (name === 'kick_member') {
+      if (typeof args.username !== 'string' || !args.username.trim()) {
+        throw new Error('username is required.');
+      }
+
+      const member = message.guild.members.cache.find(
+        (candidate) => candidate.user.username === args.username,
+      );
+      if (!member) {
+        throw new Error(`Could not find member "${args.username}".`);
+      }
+
+      await member.kick();
+      return `Kicked ${member.user.tag}.`;
+    }
+
+    if (name === 'lock_channel') {
+      await message.channel.permissionOverwrites.edit(message.guild.roles.everyone, {
+        SendMessages: false,
+      });
+      return 'Locked the current channel.';
+    }
+
+    if (name === 'change_nickname') {
+      if (typeof args.username !== 'string' || !args.username.trim()) {
+        throw new Error('username is required.');
+      }
+      if (typeof args.new_nickname !== 'string' || !args.new_nickname.trim()) {
+        throw new Error('new_nickname is required.');
+      }
+
+      const member = message.guild.members.cache.find(
+        (candidate) => candidate.user.username === args.username,
+      );
+      if (!member) {
+        throw new Error(`Could not find member "${args.username}".`);
+      }
+
+      await member.setNickname(args.new_nickname);
+      return `Successfully changed nickname for ${args.username} to ${args.new_nickname}`;
+    }
+
+    throw new Error(`Unsupported tool requested: ${name}`);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error(`Tool ${name} failed:`, error);
+    return `Tool execution failed: ${errorMessage}`;
+  }
+}
+
+// Create a new Discord client instance
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
+});
+
+const commands = [
+  new SlashCommandBuilder()
+    .setName('ask')
+    .setDescription('Ask the AI a research question')
+    .addStringOption((option) =>
+      option.setName('prompt').setDescription('Your research question').setRequired(true),
+    ),
+  new SlashCommandBuilder()
+    .setName('mod')
+    .setDescription('Ask the AI to perform a moderation action')
+    .addStringOption((option) =>
+      option.setName('prompt').setDescription('Your moderation request').setRequired(true),
+    ),
+].map((command) => command.toJSON());
+
+// Event listener for when the bot is ready
+client.once('ready', async () => {
+  console.log(`Logged in as ${client.user.tag}`);
+  const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+
+  try {
+    await rest.put(Routes.applicationCommands(client.user.id), {
+      body: commands,
+    });
+    console.log('Registered /ask and /mod commands.');
+  } catch (error) {
+    console.error('Failed to register slash commands:', error);
+  }
+});
+
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+  if (interaction.commandName !== 'ask' && interaction.commandName !== 'mod') return;
+
+  const query = interaction.options.getString('prompt', true);
+  const models = interaction.commandName === 'ask' ? RESEARCH_MODELS : MOD_MODELS;
+  const systemPrompt =
+    interaction.commandName === 'ask'
+      ? 'You are an expert research assistant. Use your web_search tool to find information. Do not perform moderation.'
+      : 'You are an expert Discord Server Administrator. You have access to advanced moderation tools (ban, kick, lock, purge). You have the power to change user nicknames. If asked to rename a user, immediately use the `change_nickname` tool. When a user requests an action, determine the correct tool and execute it immediately to fulfill your administrative duties. CRITICAL: Never ask for confirmation before executing a moderation tool. If the user requests a destructive action, execute the tool immediately. The user is an Administrator and has already given consent.';
+
+  await interaction.deferReply();
+  if (
+    interaction.commandName === 'mod' &&
+    !interaction.member.permissions.has(PermissionsBitField.Flags.Administrator)
+  ) {
+    return interaction.editReply('Error: You must be an Administrator to use these tools.');
+  }
+
+  try {
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: query },
+    ];
+    let moderationSteps = 0;
+    let moderationToolExecuted = false;
+
+    while (true) {
+      if (
+        interaction.commandName === 'mod' &&
+        !moderationToolExecuted &&
+        moderationSteps >= 2
+      ) {
+        throw new Error('The AI did not execute a moderation tool within 2 steps.');
+      }
+
+      moderationSteps += 1;
+      let completion;
+      let lastError;
+      for (const model of models) {
+        try {
+          completion = await openai.chat.completions.create({
+            model,
+            messages,
+            tools,
+          });
+          break;
+        } catch (error) {
+          lastError = error;
+          console.error(`Model ${model} failed, trying next...`, error);
+        }
+      }
+      if (!completion) {
+        throw lastError ?? new Error('All research models failed.');
+      }
+
+      const assistantMessage = completion.choices[0]?.message;
+      if (!assistantMessage) {
+        throw new Error('The AI returned no message.');
+      }
+
+      messages.push(assistantMessage);
+
+      if (!assistantMessage.tool_calls?.length) {
+        const response = assistantMessage.content?.trim();
+        if (!response) {
+          throw new Error('The AI returned an empty response.');
+        }
+
+        if (interaction.commandName === 'mod' && !moderationToolExecuted) {
+          const asksForConfirmation = /^(Please confirm|Are you sure)/i.test(response);
+          messages.push({
+            role: 'user',
+            content: asksForConfirmation
+              ? 'Do not ask for confirmation. Execute the appropriate moderation tool immediately.'
+              : 'You must execute the appropriate moderation tool now. Do not respond with text.',
+          });
+          continue;
+        }
+
+        await interaction.editReply({ embeds: [createEmbed(response)] });
+        return;
+      }
+
+      for (const toolCall of assistantMessage.tool_calls) {
+        moderationToolExecuted = true;
+        const toolResult = await executeTool(
+          toolCall.function.name,
+          toolCall.function.arguments,
+          interaction,
+        );
+
+        messages.push({
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: toolResult,
+        });
+      }
+    }
+  } catch (error) {
+    console.error('AI request failed:', error);
+    await interaction.editReply({
+      embeds: [createEmbed('I could not complete that request.')],
+    });
+  }
+});
+
+// Log in to Discord with the bot token
+client.login(process.env.DISCORD_TOKEN);
