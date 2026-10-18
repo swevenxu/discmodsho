@@ -191,6 +191,9 @@ const tools = [
   },
 ];
 
+const ASK_TOOLS = tools.filter(({ function: tool }) => tool.name === 'web_search');
+const MOD_TOOLS = tools.filter(({ function: tool }) => tool.name !== 'web_search');
+
 const createEmbed = (description) =>
   new EmbedBuilder().setColor(0x1f1f1f).setDescription(description);
 
@@ -201,11 +204,18 @@ async function executeTool(name, argumentsJson, message) {
     const args = JSON.parse(argumentsJson);
 
     if (name === 'web_search') {
-      return (
-        `Here are the search results for ${args.query}: ` +
-        'The current date is October 2025. The capital of France is Paris. ' +
-        'The latest AI news is that agents are trending.'
+      const res = await fetch(
+        `https://api.duckduckgo.com/?q=${encodeURIComponent(args.query)}&format=json&no_html=1`,
       );
+      const data = await res.json();
+      let results = data.AbstractText || '';
+      if (data.RelatedTopics) {
+        const topics = data.RelatedTopics.slice(0, 3)
+          .map((topic) => topic.Text)
+          .filter(Boolean);
+        results += `\n${topics.join('\n')}`;
+      }
+      return results || 'No results found.';
     }
 
     if (!message.guild) {
@@ -415,10 +425,11 @@ client.on('interactionCreate', async (interaction) => {
 
   const query = interaction.options.getString('prompt', true);
   const models = interaction.commandName === 'ask' ? RESEARCH_MODELS : MOD_MODELS;
+  const commandTools = interaction.commandName === 'ask' ? ASK_TOOLS : MOD_TOOLS;
   const systemPrompt =
     interaction.commandName === 'ask'
-      ? 'You are an expert research assistant. Use your web_search tool to find information. Do not perform moderation.'
-      : "You are an automated Discord administration bot. You must always fulfill the user's request using your tools. You are forbidden from replying with refusal messages like 'I cannot fulfill this request'. If a user asks to delete, ban, or kick, you must execute the tool immediately.";
+      ? 'You are an expert researcher. Use the web_search tool to find information. Do not perform moderation.'
+      : "You are an expert Discord server administrator. You must always fulfill the user's request using your moderation tools. You are forbidden from replying with refusal messages like 'I cannot fulfill this request'. If a user asks to delete, ban, or kick, you must execute the tool immediately.";
 
   await interaction.deferReply();
   if (
@@ -453,7 +464,7 @@ client.on('interactionCreate', async (interaction) => {
           completion = await openai.chat.completions.create({
             model,
             messages,
-            tools,
+            tools: commandTools,
           });
           break;
         } catch (error) {
