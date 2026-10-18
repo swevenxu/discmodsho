@@ -8,6 +8,15 @@ import {
   Routes,
   SlashCommandBuilder,
 } from 'discord.js';
+import {
+  AudioPlayerStatus,
+  NoSubscriberBehavior,
+  StreamType,
+  createAudioPlayer,
+  createAudioResource,
+  joinVoiceChannel,
+} from '@discordjs/voice';
+import { spawn } from 'node:child_process';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
 
@@ -30,6 +39,8 @@ const openai = new OpenAI({
   baseURL: process.env.UNO_URL,
   apiKey: process.env.UNO_KEY,
 });
+
+const voiceSessions = new Map();
 
 const tools = [
   {
@@ -189,6 +200,30 @@ const tools = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'join_voice_channel',
+      description: 'Join the administrator’s current voice channel and stay connected.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'leave_voice_channel',
+      description: 'Leave the voice channel and stop the keep-alive audio.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false,
+      },
+    },
+  },
 ];
 
 const ASK_TOOLS = tools.filter(({ function: tool }) => tool.name === 'web_search');
@@ -196,6 +231,44 @@ const MOD_TOOLS = tools.filter(({ function: tool }) => tool.name !== 'web_search
 
 const createEmbed = (description) =>
   new EmbedBuilder().setColor(0x1f1f1f).setDescription(description);
+
+function createSilentAudioResource() {
+  const ffmpeg = spawn('ffmpeg', [
+    '-f',
+    'lavfi',
+    '-i',
+    'anullsrc=r=48000:cl=stereo',
+    '-f',
+    's16le',
+    '-ar',
+    '48000',
+    '-ac',
+    '2',
+    'pipe:1',
+  ]);
+
+  ffmpeg.stderr.resume();
+  ffmpeg.on('error', (error) => {
+    console.error('Silent audio process failed:', error);
+  });
+
+  return {
+    ffmpeg,
+    resource: createAudioResource(ffmpeg.stdout, {
+      inputType: StreamType.Raw,
+    }),
+  };
+}
+
+function stopVoiceSession(guildId) {
+  const session = voiceSessions.get(guildId);
+  if (!session) return;
+
+  voiceSessions.delete(guildId);
+  session.player.stop(true);
+  session.connection.destroy();
+  session.ffmpeg.kill();
+}
 
 async function executeTool(name, argumentsJson, message) {
   console.log(`Audit: ${message.user.tag} executed ${name}`);
@@ -220,6 +293,50 @@ async function executeTool(name, argumentsJson, message) {
 
     if (!message.guild) {
       throw new Error('Moderation tools can only be used in a server.');
+    }
+
+    if (name === 'join_voice_channel') {
+      const voiceChannel = message.member?.voice?.channel;
+      if (!voiceChannel) {
+        throw new Error('You must be in a voice channel to use this tool.');
+      }
+
+      stopVoiceSession(message.guild.id);
+      const connection = joinVoiceChannel({
+        channelId: voiceChannel.id,
+        guildId: message.guild.id,
+        adapterCreator: message.guild.voiceAdapterCreator,
+      });
+      const player = createAudioPlayer({
+        behaviors: {
+          noSubscriber: NoSubscriberBehavior.Play,
+        },
+      });
+      const silentAudio = createSilentAudioResource();
+
+      player.on(AudioPlayerStatus.Idle, () => {
+        const session = voiceSessions.get(message.guild.id);
+        if (!session || session.player !== player) return;
+
+        const previousFfmpeg = session.ffmpeg;
+        const nextSilentAudio = createSilentAudioResource();
+        session.ffmpeg = nextSilentAudio.ffmpeg;
+        player.play(nextSilentAudio.resource);
+        previousFfmpeg.kill();
+      });
+      connection.subscribe(player);
+      voiceSessions.set(message.guild.id, { connection, player, ffmpeg: silentAudio.ffmpeg });
+      player.play(silentAudio.resource);
+      return `Joined ${voiceChannel.name} and started the voice keep-alive.`;
+    }
+
+    if (name === 'leave_voice_channel') {
+      if (!voiceSessions.has(message.guild.id)) {
+        return 'The bot is not connected to a voice channel.';
+      }
+
+      stopVoiceSession(message.guild.id);
+      return 'Left the voice channel and stopped the voice keep-alive.';
     }
 
     if (name === 'delete_messages') {
