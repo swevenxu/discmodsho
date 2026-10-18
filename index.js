@@ -229,11 +229,10 @@ const tools = [
 const ASK_TOOLS = tools.filter(({ function: tool }) => tool.name === 'web_search');
 const MOD_TOOLS = tools.filter(({ function: tool }) => tool.name !== 'web_search');
 
-const createEmbed = (description, command) =>
-  new EmbedBuilder()
-    .setColor(0x1f1f1f)
-    .setTitle(`Command: ${command.slice(0, 240)}`)
-    .setDescription(description);
+const createEmbeds = (description, command) => [
+  new EmbedBuilder().setColor(0x1f1f1f).setDescription(command),
+  new EmbedBuilder().setColor(0x1f1f1f).setDescription(description),
+];
 
 function createSilentAudioResource() {
   const ffmpeg = spawn('ffmpeg', [
@@ -620,7 +619,7 @@ client.on('interactionCreate', async (interaction) => {
           continue;
         }
 
-        await interaction.editReply({ embeds: [createEmbed(response, query)] });
+        await interaction.editReply({ embeds: createEmbeds(response, query) });
         return;
       }
 
@@ -642,7 +641,7 @@ client.on('interactionCreate', async (interaction) => {
   } catch (error) {
     console.error('AI request failed:', error);
     await interaction.editReply({
-      embeds: [createEmbed('I could not complete that request.', query)],
+      embeds: createEmbeds('I could not complete that request.', query),
     });
   }
 });
