@@ -231,10 +231,32 @@ const tools = [
 const ASK_TOOLS = tools.filter(({ function: tool }) => tool.name === 'web_search');
 const MOD_TOOLS = tools.filter(({ function: tool }) => tool.name !== 'web_search');
 
-const createEmbeds = (description, command) => [
-  new EmbedBuilder().setColor(0x1f1f1f).setDescription(command),
-  new EmbedBuilder().setColor(0x1f1f1f).setDescription(description),
-];
+const createResponseEmbed = (response, interaction) =>
+  new EmbedBuilder()
+    .setColor(0x0099ff)
+    .setTitle('AI Research & Moderation')
+    .setDescription(response)
+    .setFooter({
+      text: `Requested by ${interaction.user.username}`,
+      iconURL: interaction.user.displayAvatarURL(),
+    })
+    .setTimestamp();
+
+const createCommandEmbed = (command) =>
+  new EmbedBuilder().setColor(0x1f1f1f).setDescription(command);
+
+async function sendResponse(interaction, command, response) {
+  const firstChunk = response.slice(0, 4000);
+  const remainingChunks = response.slice(4000).match(/[\s\S]{1,2000}/g) || [];
+
+  await interaction.editReply({
+    embeds: [createCommandEmbed(command), createResponseEmbed(firstChunk, interaction)],
+  });
+
+  for (const chunk of remainingChunks) {
+    await interaction.followUp({ content: chunk });
+  }
+}
 
 function createSilentAudioResource() {
   const ffmpeg = spawn('ffmpeg', [
@@ -563,10 +585,12 @@ client.on('interactionCreate', async (interaction) => {
   const history = userHistory;
   const models = interaction.commandName === 'ask' ? RESEARCH_MODELS : MOD_MODELS;
   const commandTools = interaction.commandName === 'ask' ? ASK_TOOLS : MOD_TOOLS;
+  const formattingRule =
+    ' Discord does not support Markdown tables. If you need to output a table, you MUST wrap the entire table inside a markdown code block using triple backticks (```). Otherwise, use bullet points.';
   const systemPrompt =
     interaction.commandName === 'ask'
-      ? 'You are an expert researcher. Use the web_search tool to find information. Do not perform moderation. You have access to the previous messages in this conversation. Use them for context.'
-      : "You are an expert Discord server administrator. You must always fulfill the user's request using your moderation tools. You are forbidden from replying with refusal messages like 'I cannot fulfill this request'. If a user asks to delete, ban, or kick, you must execute the tool immediately. You have access to the previous messages in this conversation. Use them for context.";
+      ? `You are an expert researcher. Use the web_search tool to find information. Do not perform moderation. You have access to the previous messages in this conversation. Use them for context.${formattingRule}`
+      : `You are an expert Discord server administrator. You must always fulfill the user's request using your moderation tools. You are forbidden from replying with refusal messages like 'I cannot fulfill this request'. If a user asks to delete, ban, or kick, you must execute the tool immediately. You have access to the previous messages in this conversation. Use them for context.${formattingRule}`;
 
   await interaction.deferReply();
   if (
@@ -641,7 +665,7 @@ client.on('interactionCreate', async (interaction) => {
           continue;
         }
 
-        await interaction.editReply({ embeds: createEmbeds(response, query) });
+        await sendResponse(interaction, query, response);
         conversationHistory.set(
           interaction.user.id,
           [
@@ -671,14 +695,22 @@ client.on('interactionCreate', async (interaction) => {
   } catch (error) {
     console.error('AI request failed:', error);
     if (/context length|maximum tokens/i.test(String(error?.message ?? error))) {
-      await interaction.editReply(
-        '⚠️ Memory limit reached! The conversation is too long for the AI to process. Please use /clear to wipe the history.',
-      );
+      await interaction.editReply({
+        embeds: [
+          createResponseEmbed(
+            '⚠️ Memory limit reached! The conversation is too long for the AI to process. Please use /clear to wipe the history.',
+            interaction,
+          ),
+        ],
+      });
       return;
     }
 
     await interaction.editReply({
-      embeds: createEmbeds('I could not complete that request.', query),
+      embeds: [
+        createCommandEmbed(query),
+        createResponseEmbed('I could not complete that request.', interaction),
+      ],
     });
   }
 });
