@@ -560,7 +560,7 @@ client.on('interactionCreate', async (interaction) => {
 
   const query = interaction.options.getString('prompt', true);
   const userHistory = conversationHistory.get(interaction.user.id) || [];
-  const history = userHistory.slice(-10);
+  const history = userHistory;
   const models = interaction.commandName === 'ask' ? RESEARCH_MODELS : MOD_MODELS;
   const commandTools = interaction.commandName === 'ask' ? ASK_TOOLS : MOD_TOOLS;
   const systemPrompt =
@@ -608,6 +608,9 @@ client.on('interactionCreate', async (interaction) => {
         } catch (error) {
           lastError = error;
           console.error(`Model ${model} failed, trying next...`, error);
+          if (/context length|maximum tokens/i.test(String(error?.message ?? error))) {
+            throw error;
+          }
         }
       }
       if (!completion) {
@@ -641,9 +644,11 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.editReply({ embeds: createEmbeds(response, query) });
         conversationHistory.set(
           interaction.user.id,
-          [...history, { role: 'user', content: query }, { role: 'assistant', content: response }].slice(
-            -10,
-          ),
+          [
+            ...conversationHistory.get(interaction.user.id) || [],
+            { role: 'user', content: query },
+            { role: 'assistant', content: response },
+          ],
         );
         return;
       }
@@ -665,6 +670,13 @@ client.on('interactionCreate', async (interaction) => {
     }
   } catch (error) {
     console.error('AI request failed:', error);
+    if (/context length|maximum tokens/i.test(String(error?.message ?? error))) {
+      await interaction.editReply(
+        '⚠️ Memory limit reached! The conversation is too long for the AI to process. Please use /clear to wipe the history.',
+      );
+      return;
+    }
+
     await interaction.editReply({
       embeds: createEmbeds('I could not complete that request.', query),
     });
