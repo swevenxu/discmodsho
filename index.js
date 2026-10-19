@@ -23,6 +23,8 @@ import OpenAI from 'openai';
 // Load environment variables from .env file
 dotenv.config();
 
+const conversationHistory = new Map();
+
 const RESEARCH_MODELS = [
   'gemini-3.6-flash:free',
   'gpt-4o:free',
@@ -521,6 +523,9 @@ const commands = [
     .addStringOption((option) =>
       option.setName('prompt').setDescription('Your moderation request').setRequired(true),
     ),
+  new SlashCommandBuilder()
+    .setName('clear')
+    .setDescription('Clear your conversation memory with the bot'),
 ].map((command) => command.toJSON());
 
 // Event listener for when the bot is ready
@@ -540,15 +545,28 @@ client.once('ready', async () => {
 
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
-  if (interaction.commandName !== 'ask' && interaction.commandName !== 'mod') return;
+  if (
+    interaction.commandName !== 'ask' &&
+    interaction.commandName !== 'mod' &&
+    interaction.commandName !== 'clear'
+  ) {
+    return;
+  }
+
+  if (interaction.commandName === 'clear') {
+    conversationHistory.delete(interaction.user.id);
+    return interaction.reply('🧠 Memory cleared!');
+  }
 
   const query = interaction.options.getString('prompt', true);
+  const userHistory = conversationHistory.get(interaction.user.id) || [];
+  const history = userHistory.slice(-10);
   const models = interaction.commandName === 'ask' ? RESEARCH_MODELS : MOD_MODELS;
   const commandTools = interaction.commandName === 'ask' ? ASK_TOOLS : MOD_TOOLS;
   const systemPrompt =
     interaction.commandName === 'ask'
-      ? 'You are an expert researcher. Use the web_search tool to find information. Do not perform moderation.'
-      : "You are an expert Discord server administrator. You must always fulfill the user's request using your moderation tools. You are forbidden from replying with refusal messages like 'I cannot fulfill this request'. If a user asks to delete, ban, or kick, you must execute the tool immediately.";
+      ? 'You are an expert researcher. Use the web_search tool to find information. Do not perform moderation. You have access to the previous messages in this conversation. Use them for context.'
+      : "You are an expert Discord server administrator. You must always fulfill the user's request using your moderation tools. You are forbidden from replying with refusal messages like 'I cannot fulfill this request'. If a user asks to delete, ban, or kick, you must execute the tool immediately. You have access to the previous messages in this conversation. Use them for context.";
 
   await interaction.deferReply();
   if (
@@ -561,6 +579,7 @@ client.on('interactionCreate', async (interaction) => {
   try {
     const messages = [
       { role: 'system', content: systemPrompt },
+      ...history,
       { role: 'user', content: query },
     ];
     let moderationSteps = 0;
@@ -620,6 +639,12 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         await interaction.editReply({ embeds: createEmbeds(response, query) });
+        conversationHistory.set(
+          interaction.user.id,
+          [...history, { role: 'user', content: query }, { role: 'assistant', content: response }].slice(
+            -10,
+          ),
+        );
         return;
       }
 
